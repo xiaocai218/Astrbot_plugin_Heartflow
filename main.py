@@ -12,6 +12,34 @@ from astrbot.api import logger
 from astrbot.api.message_components import Plain
 
 
+TUNE_PRESETS = {
+    "quiet": {
+        "reply_threshold": 0.68,
+        "min_reply_interval_seconds": 180,
+        "aggressive_reply_mode": False,
+        "rule_bonus_enabled": True,
+        "max_rule_bonus": 0.06,
+        "judge_context_count": 8,
+    },
+    "balanced": {
+        "reply_threshold": 0.58,
+        "min_reply_interval_seconds": 60,
+        "aggressive_reply_mode": False,
+        "rule_bonus_enabled": True,
+        "max_rule_bonus": 0.10,
+        "judge_context_count": 10,
+    },
+    "active": {
+        "reply_threshold": 0.52,
+        "min_reply_interval_seconds": 20,
+        "aggressive_reply_mode": True,
+        "rule_bonus_enabled": True,
+        "max_rule_bonus": 0.14,
+        "judge_context_count": 12,
+    },
+}
+
+
 @dataclass
 class JudgeResult:
     """判断结果数据类"""
@@ -129,22 +157,7 @@ class HeartflowPlugin(star.Star):
     def __init__(self, context: star.Context, config):
         super().__init__(context)
         self.config = config
-
-        # 判断模型配置
-        self.judge_provider_name = self.config.get("judge_provider_name", "")
-
-        # 心流参数配置
-        self.reply_threshold = self.config.get("reply_threshold", 0.6)
-        self.energy_decay_rate = self.config.get("energy_decay_rate", 0.1)
-        self.energy_recovery_rate = self.config.get("energy_recovery_rate", 0.02)
-        self.context_messages_count = self.config.get("context_messages_count", 5)
-        self.judge_context_count = self.config.get("judge_context_count", self.context_messages_count)
-        self.min_reply_interval = self.config.get("min_reply_interval_seconds", 0)
-        self.aggressive_reply_mode = self.config.get("aggressive_reply_mode", False)
-        self.rule_bonus_enabled = self.config.get("rule_bonus_enabled", True)
-        self.max_rule_bonus = self.config.get("max_rule_bonus", 0.12)
-        self.whitelist_enabled = self.config.get("whitelist_enabled", False)
-        self.chat_whitelist = self.config.get("chat_whitelist", [])
+        self._load_config()
 
         # 群聊状态管理
         self.chat_states: Dict[str, ChatState] = {}
@@ -158,10 +171,6 @@ class HeartflowPlugin(star.Star):
         # 系统提示词缓存：{conversation_id: {"original": str, "summarized": str, "persona_id": str}}
         self.system_prompt_cache: Dict[str, Dict[str, str]] = {}
 
-        # 判断配置
-        self.judge_include_reasoning = self.config.get("judge_include_reasoning", True)
-        self.judge_max_retries = max(0, self.config.get("judge_max_retries", 3))  # 确保最小为0
-        
         # 判断权重配置
         self.weights = {
             "relevance": self.config.get("judge_relevance", 0.25),
@@ -179,6 +188,50 @@ class HeartflowPlugin(star.Star):
             logger.info(f"判断权重和已归一化，当前配置为: {self.weights}")
 
         logger.info("心流插件已初始化")
+
+    def _load_config(self) -> None:
+        """从配置对象同步当前运行时参数。"""
+        self.judge_provider_name = self.config.get("judge_provider_name", "")
+        self.reply_threshold = self.config.get("reply_threshold", 0.6)
+        self.energy_decay_rate = self.config.get("energy_decay_rate", 0.1)
+        self.energy_recovery_rate = self.config.get("energy_recovery_rate", 0.02)
+        self.context_messages_count = self.config.get("context_messages_count", 5)
+        self.judge_context_count = self.config.get("judge_context_count", self.context_messages_count)
+        self.min_reply_interval = self.config.get("min_reply_interval_seconds", 0)
+        self.aggressive_reply_mode = self.config.get("aggressive_reply_mode", False)
+        self.rule_bonus_enabled = self.config.get("rule_bonus_enabled", True)
+        self.max_rule_bonus = self.config.get("max_rule_bonus", 0.12)
+        self.whitelist_enabled = self.config.get("whitelist_enabled", False)
+        self.chat_whitelist = self.config.get("chat_whitelist", [])
+        self.judge_include_reasoning = self.config.get("judge_include_reasoning", True)
+        self.judge_max_retries = max(0, self.config.get("judge_max_retries", 3))
+
+    def _apply_runtime_config(self, updates: dict) -> None:
+        """更新运行时参数，并尽量回写到配置对象。"""
+        for key, value in updates.items():
+            try:
+                self.config[key] = value
+            except Exception:
+                pass
+        self._load_config()
+        self._raw_msg_buffer_size = max(self.context_messages_count, self.judge_context_count) * 4
+        for umo, buffer in list(self._raw_msg_buffer.items()):
+            self._raw_msg_buffer[umo] = deque(buffer, maxlen=self._raw_msg_buffer_size)
+
+    def _get_runtime_config_snapshot(self) -> dict:
+        """返回当前运行时配置快照，便于展示和调试。"""
+        return {
+            "reply_threshold": self.reply_threshold,
+            "judge_provider_name": self.judge_provider_name,
+            "judge_max_retries": self.judge_max_retries,
+            "aggressive_reply_mode": self.aggressive_reply_mode,
+            "rule_bonus_enabled": self.rule_bonus_enabled,
+            "max_rule_bonus": self.max_rule_bonus,
+            "min_reply_interval_seconds": self.min_reply_interval,
+            "judge_context_count": self.judge_context_count,
+            "whitelist_enabled": self.whitelist_enabled,
+            "chat_whitelist_count": len(self.chat_whitelist) if self.whitelist_enabled else 0,
+        }
 
     async def _get_or_create_summarized_system_prompt(self, event: AstrMessageEvent, original_prompt: str) -> str:
         """获取或创建精简版系统提示词"""
@@ -884,6 +937,7 @@ class HeartflowPlugin(star.Star):
 
         chat_id = event.unified_msg_origin
         chat_state = self._get_chat_state(chat_id)
+        config_snapshot = self._get_runtime_config_snapshot()
 
         status_info = f"""
 🔮 心流状态报告
@@ -899,13 +953,15 @@ class HeartflowPlugin(star.Star):
 - 回复率: {(chat_state.total_replies / max(1, chat_state.total_messages) * 100):.1f}%
 
 ⚙️ **配置参数**
-- 回复阈值: {self.reply_threshold}
-- 判断提供商: {self.judge_provider_name}
-- 最大重试次数: {self.judge_max_retries}
-- 更积极模式: {'✅ 开启' if self.aggressive_reply_mode else '❌ 关闭'}
-- 规则加权: {'✅ 开启' if self.rule_bonus_enabled else '❌ 关闭'} (上限 {self.max_rule_bonus:.2f})
-- 白名单模式: {'✅ 开启' if self.whitelist_enabled else '❌ 关闭'}
-- 白名单群聊数: {len(self.chat_whitelist) if self.whitelist_enabled else 0}
+- 回复阈值: {config_snapshot['reply_threshold']}
+- 判断提供商: {config_snapshot['judge_provider_name']}
+- 最大重试次数: {config_snapshot['judge_max_retries']}
+- 更积极模式: {'✅ 开启' if config_snapshot['aggressive_reply_mode'] else '❌ 关闭'}
+- 规则加权: {'✅ 开启' if config_snapshot['rule_bonus_enabled'] else '❌ 关闭'} (上限 {config_snapshot['max_rule_bonus']:.2f})
+- 最短回复间隔: {config_snapshot['min_reply_interval_seconds']} 秒
+- 判断上下文条数: {config_snapshot['judge_context_count']}
+- 白名单模式: {'✅ 开启' if config_snapshot['whitelist_enabled'] else '❌ 关闭'}
+- 白名单群聊数: {config_snapshot['chat_whitelist_count']}
 
 🧠 **智能缓存**
 - 系统提示词缓存: {len(self.system_prompt_cache)} 个
@@ -921,6 +977,33 @@ class HeartflowPlugin(star.Star):
 """
 
         event.set_result(event.plain_result(status_info))
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("heartflow_tune")
+    async def heartflow_tune(self, event: AstrMessageEvent):
+        """快速切换主动回复预设。"""
+        parts = event.message_str.strip().split()
+        if len(parts) < 2:
+            preset_names = ", ".join(TUNE_PRESETS.keys())
+            event.set_result(event.plain_result(f"用法: /heartflow_tune <preset>\n可选预设: {preset_names}"))
+            return
+
+        preset_name = parts[1].strip().lower()
+        preset = TUNE_PRESETS.get(preset_name)
+        if not preset:
+            preset_names = ", ".join(TUNE_PRESETS.keys())
+            event.set_result(event.plain_result(f"未知预设: {preset_name}\n可选预设: {preset_names}"))
+            return
+
+        self._apply_runtime_config(preset)
+        logger.info(f"应用心流调参预设: {preset_name} | {preset}")
+
+        preset_info = "\n".join(f"- {key}: {value}" for key, value in preset.items())
+        event.set_result(event.plain_result(
+            f"✅ 已应用心流预设 `{preset_name}`\n"
+            f"注意：这是运行时调整，是否持久化取决于 AstrBot 的配置实现。\n\n"
+            f"{preset_info}"
+        ))
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("heartflow_debug")

@@ -70,6 +70,7 @@ Gemma 27b，可在Google Aistudio获取密钥后使用，每天免费14400次，
 - `/heartflow`：查看当前群聊的心流状态
 - `/heartflow_reset`：重置当前群聊的心流状态
 - `/heartflow_debug`：查看最近一次心流判断的分数、拦截原因和规则命中情况
+- `/heartflow_tune <quiet|balanced|active>`：一键切换主动回复风格预设
 
 ## 📊 状态说明
 
@@ -79,6 +80,18 @@ Gemma 27b，可在Google Aistudio获取密钥后使用，每天免费14400次，
 - **恢复机制**：不回复时精力缓慢恢复，每日重置时额外恢复
 
 ## 🔧 高级配置
+
+### 风格预设
+- `quiet`：更克制，适合高噪音群或只想偶尔插话的场景
+- `balanced`：默认推荐，兼顾存在感和打扰控制
+- `active`：更积极，适合闲聊群、测试群、陪伴型人格
+
+可以通过管理员命令快速切换：
+
+```text
+/heartflow_tune balanced
+/heartflow_tune active
+```
 
 ### 权重调整
 插件内置权重配置：
@@ -104,6 +117,7 @@ weights = {
 3. **分析判断日志**：优化判断提示词
 4. **收集用户反馈**：持续改进回复策略
 5. **使用 `/heartflow_debug`**：快速判断是被冷却/白名单拦截，还是评分没有过阈值
+6. **使用 `/heartflow_tune`**：先切到 `balanced` 或 `active`，再观察最近几轮表现
 
 ## 🔍 故障排除
 
