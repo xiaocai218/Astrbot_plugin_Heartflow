@@ -48,6 +48,18 @@ DEBUG_EXCLUDED_COMMANDS = {
     "heartflow_cache_clear",
 }
 
+MANAGEMENT_OUTPUT_PREFIXES = (
+    "🔮 心流状态报告",
+    "🧪 Heartflow",
+    "✅ 已应用心流预设",
+    "✅ 心流状态已重置",
+    "🧠 系统提示词缓存状态",
+    "✅ 已清除 ",
+    "用法: /heartflow_tune",
+    "未知预设:",
+    "暂无调试记录",
+)
+
 
 @dataclass
 class JudgeResult:
@@ -264,6 +276,26 @@ class HeartflowPlugin(star.Star):
                 return True
             if normalized_chat_id.endswith(allowed_id) or allowed_id.endswith(normalized_chat_id):
                 return True
+        return False
+
+    @staticmethod
+    def _is_management_output_text(text: str) -> bool:
+        """判断文本是否为插件管理命令的输出内容。"""
+        raw_text = (text or "").strip()
+        if not raw_text:
+            return False
+        return raw_text.startswith(MANAGEMENT_OUTPUT_PREFIXES)
+
+    def _should_skip_raw_message(self, text: str) -> bool:
+        """过滤不应写入原始上下文缓冲区的文本。"""
+        raw_text = (text or "").strip()
+        if not raw_text:
+            return True
+        command_name = raw_text.lstrip("/").split()[0].lower() if raw_text else ""
+        if command_name in DEBUG_EXCLUDED_COMMANDS:
+            return True
+        if self._is_management_output_text(raw_text):
+            return True
         return False
 
     async def _get_or_create_summarized_system_prompt(self, event: AstrMessageEvent, original_prompt: str) -> str:
@@ -578,6 +610,8 @@ class HeartflowPlugin(star.Star):
 
     def _record_raw_message(self, event: AstrMessageEvent, is_bot: bool = False) -> None:
         """将消息写入原始消息缓冲区"""
+        if self._should_skip_raw_message(event.message_str):
+            return
         umo = event.unified_msg_origin
         if umo not in self._raw_msg_buffer:
             self._raw_msg_buffer[umo] = deque(maxlen=self._raw_msg_buffer_size)
@@ -591,7 +625,11 @@ class HeartflowPlugin(star.Star):
 
     def _get_raw_buffer(self, umo: str) -> list[RawMessage]:
         """获取缓冲区中的消息列表（时间顺序）"""
-        return list(self._raw_msg_buffer.get(umo, []))
+        return [
+            msg
+            for msg in self._raw_msg_buffer.get(umo, [])
+            if not self._should_skip_raw_message(msg.content)
+        ]
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=1000)
     async def on_group_message(self, event: AstrMessageEvent):
@@ -670,6 +708,8 @@ class HeartflowPlugin(star.Star):
             comp.text for comp in result.chain if isinstance(comp, Plain)
         ).strip()
         if not reply_text:
+            return
+        if self._should_skip_raw_message(reply_text):
             return
 
         umo = event.unified_msg_origin
