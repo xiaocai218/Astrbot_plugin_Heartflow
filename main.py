@@ -170,7 +170,7 @@ class HeartflowPlugin(star.Star):
 
         # 群聊状态管理
         self.chat_states: Dict[str, ChatState] = {}
-        self.debug_snapshots: Dict[str, DebugSnapshot] = {}
+        self.debug_snapshots: Dict[str, deque] = {}
 
         # 原始群聊消息缓冲区：{unified_msg_origin: deque[RawMessage]}
         # 记录所有群聊原始消息（无论是否触发 LLM），用于判断上下文
@@ -721,7 +721,11 @@ class HeartflowPlugin(star.Star):
         if self._should_skip_debug_snapshot(event):
             return
 
-        self.debug_snapshots[event.unified_msg_origin] = DebugSnapshot(
+        umo = event.unified_msg_origin
+        if umo not in self.debug_snapshots:
+            self.debug_snapshots[umo] = deque(maxlen=3)
+
+        self.debug_snapshots[umo].appendleft(DebugSnapshot(
             timestamp=time.time(),
             message=event.message_str,
             sender_name=event.get_sender_name(),
@@ -738,7 +742,7 @@ class HeartflowPlugin(star.Star):
             continuity=judge_result.continuity if judge_result else 0.0,
             reasoning=judge_result.reasoning if judge_result else "",
             rule_reasons=list(judge_result.rule_reasons) if judge_result else [],
-        )
+        ))
 
     def _should_skip_debug_snapshot(self, event: AstrMessageEvent) -> bool:
         """过滤不应污染调试结果的消息，例如命令或其他已唤醒消息。"""
@@ -1030,16 +1034,17 @@ class HeartflowPlugin(star.Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("heartflow_debug")
     async def heartflow_debug(self, event: AstrMessageEvent):
-        """查看当前群最近一次心流判断详情"""
+        """查看当前群最近三次心流判断详情"""
 
-        snapshot = self.debug_snapshots.get(event.unified_msg_origin)
-        if not snapshot:
+        snapshots = list(self.debug_snapshots.get(event.unified_msg_origin, []))
+        if not snapshots:
             event.set_result(event.plain_result("暂无调试记录，请先等待该群产生新消息后再查看。"))
             return
 
-        debug_info = f"""
-🧪 Heartflow 调试信息
-
+        sections = []
+        for index, snapshot in enumerate(snapshots, start=1):
+            sections.append(f"""
+### 记录 {index}
 🕒 记录时间: {datetime.datetime.fromtimestamp(snapshot.timestamp).strftime('%Y-%m-%d %H:%M:%S')}
 👤 发送者: {snapshot.sender_name}
 💬 消息内容: {snapshot.message}
@@ -1062,7 +1067,9 @@ class HeartflowPlugin(star.Star):
 
 📝 判断理由:
 {snapshot.reasoning if snapshot.reasoning else '无'}
-"""
+""".strip())
+
+        debug_info = "🧪 Heartflow 最近 3 次调试信息\n\n" + "\n\n".join(sections)
 
         event.set_result(event.plain_result(debug_info))
 

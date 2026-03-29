@@ -69,7 +69,7 @@ Gemma 27b，可在Google Aistudio获取密钥后使用，每天免费14400次，
 ### 2. 管理命令
 - `/heartflow`：查看当前群聊的心流状态
 - `/heartflow_reset`：重置当前群聊的心流状态
-- `/heartflow_debug`：查看最近一次心流判断的分数、拦截原因和规则命中情况
+- `/heartflow_debug`：查看最近 3 次心流判断的分数、拦截原因和规则命中情况
 - `/heartflow_tune <quiet|balanced|active>`：一键切换主动回复风格预设
 
 ## 📊 状态说明
