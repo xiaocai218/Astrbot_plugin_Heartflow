@@ -39,6 +39,15 @@ TUNE_PRESETS = {
     },
 }
 
+DEBUG_EXCLUDED_COMMANDS = {
+    "heartflow",
+    "heartflow_debug",
+    "heartflow_tune",
+    "heartflow_reset",
+    "heartflow_cache",
+    "heartflow_cache_clear",
+}
+
 
 @dataclass
 class JudgeResult:
@@ -709,6 +718,9 @@ class HeartflowPlugin(star.Star):
         judge_result: JudgeResult | None = None,
     ) -> None:
         """保存最近一次判断快照，便于管理员排查。"""
+        if self._should_skip_debug_snapshot(event):
+            return
+
         self.debug_snapshots[event.unified_msg_origin] = DebugSnapshot(
             timestamp=time.time(),
             message=event.message_str,
@@ -727,6 +739,16 @@ class HeartflowPlugin(star.Star):
             reasoning=judge_result.reasoning if judge_result else "",
             rule_reasons=list(judge_result.rule_reasons) if judge_result else [],
         )
+
+    def _should_skip_debug_snapshot(self, event: AstrMessageEvent) -> bool:
+        """过滤不应污染调试结果的消息，例如命令或其他已唤醒消息。"""
+        raw_text = (event.message_str or "").strip()
+        command_name = raw_text.lstrip("/").split()[0].lower() if raw_text else ""
+        if command_name in DEBUG_EXCLUDED_COMMANDS:
+            return True
+        if event.is_at_or_wake_command:
+            return True
+        return False
 
     def _get_chat_state(self, chat_id: str) -> ChatState:
         """获取群聊状态"""
