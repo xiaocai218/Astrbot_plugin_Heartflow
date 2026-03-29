@@ -242,6 +242,30 @@ class HeartflowPlugin(star.Star):
             "chat_whitelist_count": len(self.chat_whitelist) if self.whitelist_enabled else 0,
         }
 
+    @staticmethod
+    def _normalize_chat_id(chat_id: str) -> str:
+        """标准化群聊 ID，减少空格、大小写和前后缀差异带来的误判。"""
+        return (chat_id or "").strip().lower()
+
+    def _get_normalized_whitelist(self) -> list[str]:
+        """获取标准化后的白名单列表。"""
+        normalized = []
+        for item in self.chat_whitelist:
+            value = self._normalize_chat_id(str(item))
+            if value:
+                normalized.append(value)
+        return normalized
+
+    def _is_chat_whitelisted(self, chat_id: str) -> bool:
+        """判断当前群聊是否在白名单中，支持标准化和后缀匹配。"""
+        normalized_chat_id = self._normalize_chat_id(chat_id)
+        for allowed_id in self._get_normalized_whitelist():
+            if normalized_chat_id == allowed_id:
+                return True
+            if normalized_chat_id.endswith(allowed_id) or allowed_id.endswith(normalized_chat_id):
+                return True
+        return False
+
     async def _get_or_create_summarized_system_prompt(self, event: AstrMessageEvent, original_prompt: str) -> str:
         """获取或创建精简版系统提示词"""
         try:
@@ -688,8 +712,13 @@ class HeartflowPlugin(star.Star):
                 logger.debug(f"白名单为空，跳过处理: {event.unified_msg_origin}")
                 return False, "已启用白名单但列表为空"
 
-            if event.unified_msg_origin not in self.chat_whitelist:
-                logger.debug(f"群聊不在白名单中，跳过处理: {event.unified_msg_origin}")
+            if not self._is_chat_whitelisted(event.unified_msg_origin):
+                logger.debug(
+                    "群聊不在白名单中，跳过处理: current=%s normalized=%s whitelist=%s",
+                    event.unified_msg_origin,
+                    self._normalize_chat_id(event.unified_msg_origin),
+                    self._get_normalized_whitelist(),
+                )
                 return False, "当前群聊不在白名单中"
 
         # 跳过机器人自己的消息
@@ -748,6 +777,8 @@ class HeartflowPlugin(star.Star):
         """过滤不应污染调试结果的消息，例如命令或其他已唤醒消息。"""
         raw_text = (event.message_str or "").strip()
         command_name = raw_text.lstrip("/").split()[0].lower() if raw_text else ""
+        if not raw_text:
+            return True
         if command_name in DEBUG_EXCLUDED_COMMANDS:
             return True
         if event.is_at_or_wake_command:
@@ -964,12 +995,17 @@ class HeartflowPlugin(star.Star):
         chat_id = event.unified_msg_origin
         chat_state = self._get_chat_state(chat_id)
         config_snapshot = self._get_runtime_config_snapshot()
+        normalized_chat_id = self._normalize_chat_id(chat_id)
+        whitelist_preview = ", ".join(self._get_normalized_whitelist()[:3]) if self.whitelist_enabled else "未启用"
+        if self.whitelist_enabled and len(self.chat_whitelist) > 3:
+            whitelist_preview += " ..."
 
         status_info = f"""
 🔮 心流状态报告
 
 📊 **当前状态**
 - 群聊ID: {event.unified_msg_origin}
+- 标准化群聊ID: {normalized_chat_id}
 - 精力水平: {chat_state.energy:.2f}/1.0 {'🟢' if chat_state.energy > 0.7 else '🟡' if chat_state.energy > 0.3 else '🔴'}
 - 上次回复: {self._get_minutes_since_last_reply(chat_id)}分钟前
 
@@ -988,6 +1024,7 @@ class HeartflowPlugin(star.Star):
 - 判断上下文条数: {config_snapshot['judge_context_count']}
 - 白名单模式: {'✅ 开启' if config_snapshot['whitelist_enabled'] else '❌ 关闭'}
 - 白名单群聊数: {config_snapshot['chat_whitelist_count']}
+- 白名单预览: {whitelist_preview}
 
 🧠 **智能缓存**
 - 系统提示词缓存: {len(self.system_prompt_cache)} 个
